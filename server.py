@@ -300,6 +300,74 @@ def _slug_id(name: str, used: set[str]) -> str:
     return candidate
 
 
+def _interpret_consequence(item: dict[str, Any]) -> dict[str, Any]:
+    """Translate graph-level impacts into concise operational intelligence."""
+    import re
+    target = str(item.get("title", "")).replace(" may be affected", "").strip()
+    target_lower = target.lower()
+    rel = str(item.get("relationshipType", "")).lower()
+    path = item.get("path") if isinstance(item.get("path"), list) else []
+    parent = str(path[-2]) if len(path) >= 2 else "the affected dependency"
+
+    rules = [
+        (r"service capacity|class capacity|capacity|rooms|seats", "Operational capacity may decrease",
+         f"The proposed change reaches {target} through {parent}, which may constrain available operating capacity.", "capacity",
+         "Confirm available capacity at the target location and reserve fallback capacity before rollout."),
+        (r"waiting time|queue time|queue", "Waiting or queue time may increase",
+         "Reduced capacity can propagate into queue pressure and longer service or appointment waits.", "service-flow",
+         "Run a peak-load test and confirm an overflow or scheduling plan."),
+        (r"response time|emergency", "Emergency response time may increase",
+         "The new operating location changes access or emergency-route dependencies, which may increase response or transfer time.", "response",
+         "Validate the emergency route with the responsible safety or operations owner."),
+        (r"patient flow|student delay|movement", "User flow may be disrupted",
+         "The proposed change introduces a movement or access dependency that may increase transition friction.", "flow",
+         "Measure the affected journey time and define an alternate access or routing plan."),
+        (r"cold.?storage|delivery bay|supply|inventory|logistics", "Logistics dependencies may require redesign",
+         "The target location changes storage, delivery, supply, or replenishment dependencies that support normal operations.", "logistics",
+         "Validate the end-to-end logistics path and assign an owner for the new handoff."),
+        (r"staffing|faculty", "Staffing capacity may become constrained",
+         "Demand or operating conditions at the target location may create additional staffing pressure.", "staffing",
+         "Confirm staffing coverage against expected peak demand before rollout."),
+        (r"timetable|schedule", "Scheduling conflicts may increase",
+         "The change introduces a capacity or availability dependency that may create additional scheduling conflicts.", "scheduling",
+         "Re-run the schedule against target-location capacity and identify conflict buffers."),
+        (r"maintenance", "Maintenance workload may change",
+         "The target location introduces a different maintenance dependency that can affect operational readiness.", "maintenance",
+         "Validate maintenance ownership, access windows, and service-level coverage."),
+        (r"reliability", "Service reliability may decrease",
+         "The proposed change reaches a reliability-sensitive dependency through the target location's operating constraints.", "reliability",
+         "Define a fallback path and verify reliability under expected peak conditions."),
+        (r"revenue", "Revenue exposure may increase",
+         "The change can shift demand into a constrained operating environment, creating potential revenue exposure.", "commercial",
+         "Model demand transfer and confirm capacity is sufficient to protect service levels and revenue."),
+        (r"access", "Access constraints may affect operations",
+         "The target location has an access dependency that may affect how people, services, or resources reach the operation.", "access",
+         "Validate access routes, accessibility requirements, and peak-time constraints."),
+    ]
+
+    for pattern, title, explanation, impact_type, mitigation in rules:
+        if re.search(pattern, target_lower, re.IGNORECASE):
+            result = dict(item)
+            result.update(title=title, explanation=explanation, impactType=impact_type,
+                          recommendedMitigation=mitigation, semanticTarget=target)
+            return result
+
+    result = dict(item)
+    if rel == "constrained_by":
+        result["title"] = f"{target} may constrain operations"
+        result["explanation"] = f"The proposed change propagates through a confirmed constraint at {target}."
+    elif rel == "requires":
+        result["title"] = f"{target} may require operational support"
+        result["explanation"] = f"The proposed change reaches a confirmed resource dependency on {target}."
+    else:
+        result["title"] = f"{target} may be affected"
+        result["explanation"] = f"The proposed change can propagate through the confirmed dependency to {target}."
+    result["impactType"] = "dependency"
+    result["recommendedMitigation"] = "Validate the affected dependency against the underlying evidence before rollout."
+    result["semanticTarget"] = target
+    return result
+
+
 def _deterministic_simulation(extraction: dict[str, Any], hypotheses: list[dict[str, Any]], mutation: dict[str, Any]) -> dict[str, Any]:
     entities = extraction.get("entities", [])
     relationships = extraction.get("relationships", [])
@@ -333,7 +401,7 @@ def _deterministic_simulation(extraction: dict[str, Any], hypotheses: list[dict[
                 continue
             depth = len(next_path) - 1
             priority = round(max(1, min(100, 45 + 35 * strength + 8 * min(depth, 3))))
-            consequences.append({"id": f"impact-{target}", "title": f"{target_entity.get('name')} may be affected", "severity": "HIGH" if priority >= 75 else "MED", "priority": priority, "confidence": round(100 * strength), "depth": depth, "path": [names.get(item, item) for item in next_path], "relationshipType": edge["type"], "explanation": f"The proposed change can propagate through the confirmed {edge['type'].replace('_', ' ')} dependency to {target_entity.get('name')}.", "evidenceChunkIds": target_entity.get("evidence_chunk_ids", [])})
+            consequences.append(_interpret_consequence({"id": f"impact-{target}", "title": f"{target_entity.get('name')} may be affected", "severity": "HIGH" if priority >= 75 else "MED", "priority": priority, "confidence": round(100 * strength), "depth": depth, "path": [names.get(item, item) for item in next_path], "relationshipType": edge["type"], "explanation": f"The proposed change can propagate through the confirmed {edge['type'].replace('_', ' ')} dependency to {target_entity.get('name')}.", "evidenceChunkIds": target_entity.get("evidence_chunk_ids", [])}))
     ranked = sorted({item["id"]: item for item in consequences}.values(), key=lambda item: item["priority"], reverse=True)[:10]
     return {"entities": [{"id": entity_ids[e["name"]], **e} for e in entities], "relationships": relationships, "hypotheses": hypotheses, "mutation": mutation, "consequences": ranked, "metrics": {"entitiesAffected": len(ranked), "propagationDepth": max([item["depth"] for item in ranked], default=0), "decisionPriority": ranked[0]["priority"] if ranked else 0, "confidence": round(sum(item["confidence"] for item in ranked) / len(ranked)) if ranked else 0}}
 
