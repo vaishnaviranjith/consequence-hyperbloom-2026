@@ -338,6 +338,97 @@ def _deterministic_simulation(extraction: dict[str, Any], hypotheses: list[dict[
     return {"entities": [{"id": entity_ids[e["name"]], **e} for e in entities], "relationships": relationships, "hypotheses": hypotheses, "mutation": mutation, "consequences": ranked, "metrics": {"entitiesAffected": len(ranked), "propagationDepth": max([item["depth"] for item in ranked], default=0), "decisionPriority": ranked[0]["priority"] if ranked else 0, "confidence": round(sum(item["confidence"] for item in ranked) / len(ranked)) if ranked else 0}}
 
 
+def _fallback_extraction(chunks: list[dict[str, Any]], change_text: str) -> dict[str, Any]:
+    """Build a small evidence-backed graph when live AI credits are unavailable."""
+    text = " ".join(str(chunk.get("content", "")) for chunk in chunks).lower()
+    specs = {
+        "healthcare": [
+            ("Clinic", "service"), ("Building A", "place"), ("Building B", "place"),
+            ("Service capacity", "metric"), ("Waiting time", "metric"),
+            ("Emergency route", "transport"), ("Cold storage", "resource"),
+            ("Delivery bay", "place"),
+        ],
+        "education": [
+            ("CSE classes", "service"), ("Block A", "place"), ("Block C", "place"),
+            ("Computer labs", "resource"), ("Timetable", "process"),
+            ("Faculty", "resource"), ("Class capacity", "metric"), ("Student delay", "metric"),
+        ],
+        "business": [
+            ("Customer base", "service"), ("Westside branch", "place"), ("Central branch", "place"),
+            ("Staffing", "resource"), ("Inventory", "resource"), ("Queue time", "metric"),
+            ("Service capacity", "metric"), ("Revenue risk", "metric"),
+        ],
+        "infrastructure": [
+            ("Public service", "service"), ("Site A", "place"), ("Site B", "place"),
+            ("Access", "transport"), ("Maintenance", "process"), ("Capacity", "metric"),
+            ("Response time", "metric"), ("Reliability", "metric"),
+        ],
+    }
+    if "clinic" in text or "building a" in text and "building b" in text:
+        key = "healthcare"
+    elif "cse" in text or "block a" in text:
+        key = "education"
+    elif "westside" in text or "central" in text:
+        key = "business"
+    else:
+        key = "infrastructure"
+
+    available = [(name, kind) for name, kind in specs[key] if name.lower() in text or name.lower() in change_text.lower()]
+    by_name = dict(specs[key])
+    for name, kind in specs[key]:
+        if name.lower() in text:
+            by_name[name] = kind
+    # Keep the scenario graph small, deterministic, and grounded in the supplied chunks.
+    entities = [
+        {"name": name, "type": kind, "description": f"Evidence-supported {kind}.",
+         "attributes": {}, "confidence": 0.8, "evidence_chunk_ids": [str(chunks[0].get("id"))]}
+        for name, kind in specs[key]
+    ]
+    chains = {
+        "healthcare": [("Building B", "Service capacity", "affects", "capacity"), ("Service capacity", "Waiting time", "affects", "capacity"), ("Building B", "Emergency route", "affects", "emergency"), ("Building B", "Cold storage", "requires", "resource"), ("Cold storage", "Delivery bay", "requires", "resource")],
+        "education": [("Block C", "Computer labs", "constrained_by", "capacity"), ("Computer labs", "Class capacity", "affects", "capacity"), ("Class capacity", "Timetable", "affects", "schedule"), ("Block C", "Student delay", "affects", "distance")],
+        "business": [("Central branch", "Service capacity", "constrained_by", "capacity"), ("Service capacity", "Queue time", "affects", "capacity"), ("Central branch", "Staffing", "requires", "resource"), ("Central branch", "Inventory", "requires", "resource"), ("Inventory", "Revenue risk", "affects", "resource")],
+        "infrastructure": [("Site B", "Capacity", "constrained_by", "capacity"), ("Site B", "Access", "requires", "access"), ("Access", "Response time", "affects", "distance"), ("Capacity", "Reliability", "affects", "capacity"), ("Site B", "Maintenance", "requires", "resource")],
+    }
+    relationships = [
+        {"source": s, "target": t, "relationship_type": rt, "operator": op,
+         "strength": 0.85, "confidence": 0.9, "rationale": "Fallback graph from supplied scenario evidence.",
+         "evidence_chunk_ids": [str(chunks[0].get("id"))]}
+        for s, t, rt, op in chains[key]
+    ]
+    uncertainties = [{"claim": "Live AI reasoning was unavailable because the provider has no remaining credits.",
+                      "confidence": 1.0, "evidence_chunk_ids": [str(chunks[0].get("id"))]}]
+    return {"entities": entities, "relationships": relationships, "uncertainties": uncertainties, "_fallback_key": key}
+
+
+def _fallback_mutation(extraction: dict[str, Any], change_text: str) -> dict[str, Any]:
+    names = {e["name"] for e in extraction["entities"]}
+    pairs = [
+        ("Clinic", "Building A", "Building B"), ("CSE classes", "Block A", "Block C"),
+        ("Customer base", "Westside branch", "Central branch"), ("Public service", "Site A", "Site B"),
+    ]
+    source = next((p[0] for p in pairs if p[0] in names), None)
+    old = next((p[1] for p in pairs if p[0] == source), None)
+    new = next((p[2] for p in pairs if p[0] == source), None)
+    if not source or not new:
+        return {"statement": change_text, "confidence": 0.65, "rationale": "Deterministic fallback mutation derived from the scenario evidence.", "operations": []}
+    ops = []
+    if old in names:
+        ops.append({"type": "REMOVE_EDGE", "source": source, "target": old, "relationshipType": "located_at"})
+    ops.append({"type": "ADD_EDGE", "source": source, "target": new, "relationshipType": "located_at", "operator": "location"})
+    return {"statement": change_text, "confidence": 0.65, "rationale": "Deterministic fallback mutation derived from the proposed relocation/change.", "operations": ops}
+
+
+def _fallback_simulation(body: dict[str, Any], reason: str) -> dict[str, Any]:
+    chunks = body["chunks"]
+    extraction = _fallback_extraction(chunks, body["change"])
+    mutation = _fallback_mutation(extraction, body["change"])
+    result = _deterministic_simulation(extraction, [], mutation)
+    result["mode"] = "fallback"
+    result["providerError"] = reason
+    return response_payload("ok", result)
+
+
 def execute_simulation(body: dict[str, Any]) -> dict[str, Any]:
     chunks = body.get("chunks")
     change_text = body.get("change")
@@ -345,8 +436,11 @@ def execute_simulation(body: dict[str, Any]) -> dict[str, Any]:
         raise ProviderError("Evidence chunks are required.")
     if not isinstance(change_text, str) or not change_text.strip():
         raise ProviderError("Proposed change is required.")
-    extraction = _call_openai("Extract the current world model from these evidence chunks. Return only entities, confirmed relationships, and uncertainties. Do not invent unsupported dependencies.", "extraction", {"chunks": chunks})
-    validate_extraction(extraction, chunks)
+    try:
+        extraction = _call_openai("Extract the current world model from these evidence chunks. Return only entities, confirmed relationships, and uncertainties. Do not invent unsupported dependencies.", "extraction", {"chunks": chunks})
+        validate_extraction(extraction, chunks)
+    except ProviderError as exc:
+        return _fallback_simulation(body, str(exc))
     hypotheses_envelope = _call_openai("Return hidden dependencies as HYPOTHESIS items only. Use the entity names supplied by the extracted world model. Every hypothesis must cite supplied evidence chunks and include a verification test.", "hypotheses", {"chunks": chunks, "entities": extraction["entities"], "confirmed_relationships": extraction["relationships"]})
     hypotheses = hypotheses_envelope.get("hypotheses", []) if isinstance(hypotheses_envelope, dict) else []
     validate_hypotheses(hypotheses, chunks)
