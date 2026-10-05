@@ -289,6 +289,76 @@ def execute_provider(action: str, body: dict[str, Any]) -> dict[str, Any]:
     raise ProviderError("Unknown provider action.")
 
 
+def _slug_id(name: str, used: set[str]) -> str:
+    base = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(name)).strip("_") or "entity"
+    candidate = base
+    index = 2
+    while candidate in used:
+        candidate = f"{base}_{index}"
+        index += 1
+    used.add(candidate)
+    return candidate
+
+
+def _deterministic_simulation(extraction: dict[str, Any], hypotheses: list[dict[str, Any]], mutation: dict[str, Any]) -> dict[str, Any]:
+    entities = extraction.get("entities", [])
+    relationships = extraction.get("relationships", [])
+    used: set[str] = set()
+    entity_ids = {entity["name"]: _slug_id(entity["name"], used) for entity in entities}
+    changed_targets = {op.get("target") for op in mutation.get("operations", []) if isinstance(op, dict) and op.get("type") == "ADD_EDGE"}
+    changed_targets = {entity_ids.get(name, name) for name in changed_targets}
+    graph: dict[str, list[dict[str, Any]]] = {}
+    for rel in relationships:
+        source = entity_ids.get(rel.get("source"))
+        target = entity_ids.get(rel.get("target"))
+        if not source or not target:
+            continue
+        graph.setdefault(source, []).append({"target": target, "type": rel.get("relationship_type"), "strength": float(rel.get("strength", 0)), "confidence": float(rel.get("confidence", 0))})
+    roots = list(changed_targets) or [entity_ids[name] for name in entity_ids][:1]
+    names = {entity_ids.get(e.get("name")): e.get("name") for e in entities}
+    consequences: list[dict[str, Any]] = []
+    queue = [(root, [root], 1.0) for root in roots]
+    seen = set(roots)
+    while queue:
+        node, path, path_strength = queue.pop(0)
+        for edge in graph.get(node, []):
+            target = edge["target"]
+            strength = path_strength * edge["strength"] * edge["confidence"]
+            next_path = path + [target]
+            if target not in seen:
+                seen.add(target)
+                queue.append((target, next_path, strength))
+            target_entity = next((e for e in entities if entity_ids.get(e.get("name")) == target), None)
+            if not target_entity:
+                continue
+            depth = len(next_path) - 1
+            priority = round(max(1, min(100, 45 + 35 * strength + 8 * min(depth, 3))))
+            consequences.append({"id": f"impact-{target}", "title": f"{target_entity.get('name')} may be affected", "severity": "HIGH" if priority >= 75 else "MED", "priority": priority, "confidence": round(100 * strength), "depth": depth, "path": [names.get(item, item) for item in next_path], "relationshipType": edge["type"], "explanation": f"The proposed change can propagate through the confirmed {edge['type'].replace('_', ' ')} dependency to {target_entity.get('name')}.", "evidenceChunkIds": target_entity.get("evidence_chunk_ids", [])})
+    ranked = sorted({item["id"]: item for item in consequences}.values(), key=lambda item: item["priority"], reverse=True)[:10]
+    return {"entities": [{"id": entity_ids[e["name"]], **e} for e in entities], "relationships": relationships, "hypotheses": hypotheses, "mutation": mutation, "consequences": ranked, "metrics": {"entitiesAffected": len(ranked), "propagationDepth": max([item["depth"] for item in ranked], default=0), "decisionPriority": ranked[0]["priority"] if ranked else 0, "confidence": round(sum(item["confidence"] for item in ranked) / len(ranked)) if ranked else 0}}
+
+
+def execute_simulation(body: dict[str, Any]) -> dict[str, Any]:
+    chunks = body.get("chunks")
+    change_text = body.get("change")
+    if not isinstance(chunks, list) or not chunks:
+        raise ProviderError("Evidence chunks are required.")
+    if not isinstance(change_text, str) or not change_text.strip():
+        raise ProviderError("Proposed change is required.")
+    extraction = _call_openai("Extract the current world model from these evidence chunks. Return only entities, confirmed relationships, and uncertainties. Do not invent unsupported dependencies.", "extraction", {"chunks": chunks})
+    validate_extraction(extraction, chunks)
+    hypotheses_envelope = _call_openai("Return hidden dependencies as HYPOTHESIS items only. Use the entity names supplied by the extracted world model. Every hypothesis must cite supplied evidence chunks and include a verification test.", "hypotheses", {"chunks": chunks, "entities": extraction["entities"], "confirmed_relationships": extraction["relationships"]})
+    hypotheses = hypotheses_envelope.get("hypotheses", []) if isinstance(hypotheses_envelope, dict) else []
+    validate_hypotheses(hypotheses, chunks)
+    used: set[str] = set()
+    catalog = [{"id": _slug_id(entity["name"], used), "name": entity["name"], "type": entity["type"]} for entity in extraction["entities"]]
+    mutation = _call_openai("Return one validated mutation proposal for the proposed change. Use only entity IDs from ENTITY CATALOG. ADD_EDGE and REMOVE_EDGE must reference those IDs. Never invent IDs or unsupported relationship types. Do not calculate consequences.", "mutation", {"statement": change_text, "entities": catalog, "relationships": extraction["relationships"]})
+    validate_mutation(mutation, {item["id"] for item in catalog})
+    id_to_name = {item["id"]: item["name"] for item in catalog}
+    mutation["operations"] = [{**op, **({"source": id_to_name.get(op["source"], op["source"])} if "source" in op else {}), **({"target": id_to_name.get(op["target"], op["target"])} if "target" in op else {})} for op in mutation["operations"]]
+    return response_payload("ok", _deterministic_simulation(extraction, hypotheses, mutation))
+
+
 class ConsequenceHandler(SimpleHTTPRequestHandler):
     """Serve the demo and expose only the narrow provider API."""
 
@@ -316,7 +386,7 @@ class ConsequenceHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self.path.startswith("/api/provider/"):
+        if self.path not in {"/api/simulate"} and not self.path.startswith("/api/provider/"):
             self._json(HTTPStatus.NOT_FOUND, response_payload("rejected", errors=["Unknown endpoint."]))
             return
         try:
@@ -328,6 +398,9 @@ class ConsequenceHandler(SimpleHTTPRequestHandler):
                 raise ProviderError("Request body must be a JSON object.")
             if provider_mode() != "live":
                 self._json(HTTPStatus.SERVICE_UNAVAILABLE, response_payload("not_configured", errors=["OPENAI_API_KEY is not configured on the server."]))
+                return
+            if self.path == "/api/simulate":
+                self._json(HTTPStatus.OK, execute_simulation(body))
                 return
             action = self.path.removeprefix("/api/provider/")
             self._json(HTTPStatus.OK, execute_provider(action, body))
