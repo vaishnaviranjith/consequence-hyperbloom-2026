@@ -423,9 +423,12 @@ def _deduplicate_consequences(items: list[dict[str, Any]]) -> list[dict[str, Any
     """Group repeated business impacts while retaining the strongest evidence path."""
     grouped: dict[tuple[str, str], dict[str, Any]] = {}
     for item in items:
+        # Group by business impact, not raw graph target. This prevents
+        # multiple capacity nodes (rooms, waiting capacity, service capacity)
+        # from rendering as separate duplicate business consequences.
         key = (
-            str(item.get("impactType", "dependency")),
-            str(item.get("semanticTarget", item.get("title", ""))).strip().lower(),
+            str(item.get("impactType", "dependency")).strip().lower(),
+            str(item.get("title", "")).strip().lower(),
         )
         current = grouped.get(key)
         if not current:
@@ -484,8 +487,9 @@ def _deterministic_simulation(extraction: dict[str, Any], hypotheses: list[dict[
     ranked = sorted({item["id"]: item for item in consequences}.values(), key=lambda item: item["priority"], reverse=True)
     ranked = _deduplicate_consequences(ranked)[:10]
     top_confidences = [int(item.get("confidence", 0) or 0) for item in ranked[:3] if item.get("confidence") is not None]
+    unique_entities = {str(path[-1]) for item in ranked for path in [item.get("path", [])] if path}
     metrics = {
-        "entitiesAffected": len(ranked),
+        "entitiesAffected": len(unique_entities),
         "propagationDepth": max([item["depth"] for item in ranked], default=0),
         "decisionPriority": ranked[0]["priority"] if ranked else 0,
         "confidence": max(top_confidences) if top_confidences else 0,
