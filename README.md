@@ -69,3 +69,29 @@ Impact Graph
    â†“
 
 Mitigation Plan
+
+## Commercial MVP
+
+The repository now includes **CONSEQUENCE — AI Change Impact Simulator** in `commercial-mvp.html`.
+
+The commercial MVP adds:
+- Healthcare, Education, Business, and Infrastructure scenario presets
+- Natural-language proposed-change workflow
+- Current-world vs counterfactual comparison
+- Prioritized consequence cards
+- Impact-path visualization
+- Explicit demo/live provider status
+- Print-to-PDF report action
+- A clear separation between confirmed dependencies and AI hypotheses
+
+### Run locally
+
+```bash
+python server.py
+```
+
+Open `http://127.0.0.1:4173/`.
+
+The root route opens the commercial MVP. The original `consequence-demo.html` remains available as the hackathon/demo experience.
+
+> AI output is assistive and should be reviewed by qualified domain professionals before operational decisions.
