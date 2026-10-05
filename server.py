@@ -711,8 +711,32 @@ class ConsequenceHandler(SimpleHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise ProviderError("Request body must be a JSON object.")
             if self.path == "/api/simulate":
+                chunks = body.get("chunks")
+                change = body.get("change")
+                if (
+                    not isinstance(chunks, list)
+                    or not chunks
+                    or len(chunks) > 50
+                    or any(
+                        not isinstance(chunk, dict)
+                        or not isinstance(chunk.get("id"), str)
+                        or not chunk.get("id").strip()
+                        or not isinstance(chunk.get("content"), str)
+                        or not chunk.get("content").strip()
+                        or len(chunk.get("content", "")) > 100_000
+                        for chunk in chunks
+                    )
+                    or not isinstance(change, str)
+                    or not change.strip()
+                    or len(change) > 20_000
+                ):
+                    raise ProviderError("Simulation requires valid evidence chunks and a non-empty proposed change.")
                 if provider_mode() == "live":
-                    self._json(HTTPStatus.OK, execute_simulation(body))
+                    try:
+                        result = execute_simulation(body)
+                    except ProviderError as exc:
+                        result = _fallback_simulation(body, str(exc))
+                    self._json(HTTPStatus.OK, result)
                 else:
                     self._json(HTTPStatus.OK, _fallback_simulation(body, "AI provider is not configured; deterministic fallback simulation used."))
                 return
