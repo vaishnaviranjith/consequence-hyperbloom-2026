@@ -427,21 +427,45 @@ def _fallback_extraction(chunks: list[dict[str, Any]], change_text: str) -> dict
 
 
 def _fallback_mutation(extraction: dict[str, Any], change_text: str) -> dict[str, Any]:
-    names = {e["name"] for e in extraction["entities"]}
-    pairs = [
-        ("Clinic", "Building A", "Building B"), ("CSE classes", "Block A", "Block C"),
-        ("Customer base", "Westside branch", "Central branch"), ("Public service", "Site A", "Site B"),
-    ]
-    source = next((p[0] for p in pairs if p[0] in names), None)
-    old = next((p[1] for p in pairs if p[0] == source), None)
-    new = next((p[2] for p in pairs if p[0] == source), None)
-    if not source or not new:
-        return {"statement": change_text, "confidence": 0.65, "rationale": "Deterministic fallback mutation derived from the scenario evidence.", "operations": []}
-    ops = []
-    if old in names:
-        ops.append({"type": "REMOVE_EDGE", "source": source, "target": old, "relationshipType": "located_at"})
-    ops.append({"type": "ADD_EDGE", "source": source, "target": new, "relationshipType": "located_at", "operator": "location"})
-    return {"statement": change_text, "confidence": 0.65, "rationale": "Deterministic fallback mutation derived from the proposed relocation/change.", "operations": ops}
+    """Create a conservative mutation from entities explicitly named in the change."""
+    names = [e["name"] for e in extraction.get("entities", [])]
+    lower_change = change_text.lower()
+
+    # Prefer an explicit "from X to Y" or "from X ... to Y" relocation.
+    import re
+    match = re.search(r"from\s+(.+?)\s+to\s+(.+?)(?:[.,;]|$)", change_text, flags=re.IGNORECASE)
+    old = new = None
+    if match:
+        old_text, new_text = match.group(1).strip(), match.group(2).strip()
+        old = next((n for n in names if n.lower() in old_text.lower()), None)
+        new = next((n for n in names if n.lower() in new_text.lower()), None)
+
+    if not new:
+        # Otherwise identify the first entity explicitly named after a change verb.
+        candidates = [n for n in names if n.lower() in lower_change]
+        new = candidates[-1] if candidates else None
+
+    source = None
+    source_candidates = [n for n in names if n.lower() in lower_change and n != old and n != new]
+    if source_candidates:
+        source = source_candidates[0]
+
+    operations: list[dict[str, Any]] = []
+    if source and old:
+        operations.append({"type": "REMOVE_EDGE", "source": source, "target": old, "relationshipType": "located_at"})
+    if source and new:
+        operations.append({"type": "ADD_EDGE", "source": source, "target": new, "relationshipType": "located_at", "operator": "location"})
+
+    # For non-relocation changes, use an UPDATE_NODE on the directly named entity.
+    if not operations and new:
+        operations.append({"type": "UPDATE_NODE", "nodeId": new, "attributes": {"proposed_change": change_text}})
+
+    return {
+        "statement": change_text,
+        "confidence": 0.6 if operations else 0.4,
+        "rationale": "Deterministic fallback mutation derived only from entities explicitly present in the proposed change.",
+        "operations": operations,
+    }
 
 
 def _fallback_simulation(body: dict[str, Any], reason: str) -> dict[str, Any]:
