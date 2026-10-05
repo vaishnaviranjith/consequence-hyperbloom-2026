@@ -339,66 +339,91 @@ def _deterministic_simulation(extraction: dict[str, Any], hypotheses: list[dict[
 
 
 def _fallback_extraction(chunks: list[dict[str, Any]], change_text: str) -> dict[str, Any]:
-    """Build a small evidence-backed graph when live AI credits are unavailable."""
-    text = " ".join(str(chunk.get("content", "")) for chunk in chunks).lower()
-    specs = {
-        "healthcare": [
-            ("Clinic", "service"), ("Building A", "place"), ("Building B", "place"),
-            ("Service capacity", "metric"), ("Waiting time", "metric"),
-            ("Emergency route", "transport"), ("Cold storage", "resource"),
-            ("Delivery bay", "place"),
-        ],
-        "education": [
-            ("CSE classes", "service"), ("Block A", "place"), ("Block C", "place"),
-            ("Computer labs", "resource"), ("Timetable", "process"),
-            ("Faculty", "resource"), ("Class capacity", "metric"), ("Student delay", "metric"),
-        ],
-        "business": [
-            ("Customer base", "service"), ("Westside branch", "place"), ("Central branch", "place"),
-            ("Staffing", "resource"), ("Inventory", "resource"), ("Queue time", "metric"),
-            ("Service capacity", "metric"), ("Revenue risk", "metric"),
-        ],
-        "infrastructure": [
-            ("Public service", "service"), ("Site A", "place"), ("Site B", "place"),
-            ("Access", "transport"), ("Maintenance", "process"), ("Capacity", "metric"),
-            ("Response time", "metric"), ("Reliability", "metric"),
-        ],
-    }
-    if "clinic" in text or "building a" in text and "building b" in text:
-        key = "healthcare"
-    elif "cse" in text or "block a" in text:
-        key = "education"
-    elif "westside" in text or "central" in text:
-        key = "business"
-    else:
-        key = "infrastructure"
+    """Derive a conservative graph from evidence text without hard-coded scenario chains."""
+    known = {str(chunk.get("id")) for chunk in chunks if chunk.get("id")}
+    entities_by_name: dict[str, dict[str, Any]] = {}
+    relationships: list[dict[str, Any]] = []
 
-    available = [(name, kind) for name, kind in specs[key] if name.lower() in text or name.lower() in change_text.lower()]
-    by_name = dict(specs[key])
-    for name, kind in specs[key]:
-        if name.lower() in text:
-            by_name[name] = kind
-    # Keep the scenario graph small, deterministic, and grounded in the supplied chunks.
-    entities = [
-        {"name": name, "type": kind, "description": f"Evidence-supported {kind}.",
-         "attributes": {}, "confidence": 0.8, "evidence_chunk_ids": [str(chunks[0].get("id"))]}
-        for name, kind in specs[key]
+    def add_entity(name: str, kind: str, chunk_id: str) -> None:
+        clean = " ".join(name.strip(" .,:;()[]{}").split())
+        if len(clean) < 2 or len(clean) > 80:
+            return
+        entities_by_name.setdefault(clean.lower(), {
+            "name": clean,
+            "type": kind,
+            "description": f"Evidence-supported {kind}.",
+            "attributes": {},
+            "confidence": 0.72,
+            "evidence_chunk_ids": [chunk_id],
+        })
+        if chunk_id not in entities_by_name[clean.lower()]["evidence_chunk_ids"]:
+            entities_by_name[clean.lower()]["evidence_chunk_ids"].append(chunk_id)
+
+    # Extract explicit quoted/name-like entities and common operational nouns.
+    import re
+    patterns = [
+        r"([A-Z][A-Za-z0-9]+(?: [A-Z][A-Za-z0-9]+){0,3})",
+        r"([A-Za-z][A-Za-z0-9 -]{1,50})\s+(?:has|requires|depends on|affects|constrains|blocks)\b",
     ]
-    chains = {
-        "healthcare": [("Building B", "Service capacity", "affects", "capacity"), ("Service capacity", "Waiting time", "affects", "capacity"), ("Building B", "Emergency route", "affects", "emergency"), ("Building B", "Cold storage", "requires", "resource"), ("Cold storage", "Delivery bay", "requires", "resource")],
-        "education": [("Block C", "Computer labs", "constrained_by", "capacity"), ("Computer labs", "Class capacity", "affects", "capacity"), ("Class capacity", "Timetable", "affects", "schedule"), ("Block C", "Student delay", "affects", "distance")],
-        "business": [("Central branch", "Service capacity", "constrained_by", "capacity"), ("Service capacity", "Queue time", "affects", "capacity"), ("Central branch", "Staffing", "requires", "resource"), ("Central branch", "Inventory", "requires", "resource"), ("Inventory", "Revenue risk", "affects", "resource")],
-        "infrastructure": [("Site B", "Capacity", "constrained_by", "capacity"), ("Site B", "Access", "requires", "access"), ("Access", "Response time", "affects", "distance"), ("Capacity", "Reliability", "affects", "capacity"), ("Site B", "Maintenance", "requires", "resource")],
-    }
-    relationships = [
-        {"source": s, "target": t, "relationship_type": rt, "operator": op,
-         "strength": 0.85, "confidence": 0.9, "rationale": "Fallback graph from supplied scenario evidence.",
-         "evidence_chunk_ids": [str(chunks[0].get("id"))]}
-        for s, t, rt, op in chains[key]
-    ]
-    uncertainties = [{"claim": "Live AI reasoning was unavailable because the provider has no remaining credits.",
-                      "confidence": 1.0, "evidence_chunk_ids": [str(chunks[0].get("id"))]}]
-    return {"entities": entities, "relationships": relationships, "uncertainties": uncertainties, "_fallback_key": key}
+    stop = {"The", "This", "That", "Evidence", "Clinic", "Move", "Current", "Next", "Month"}
+    for chunk in chunks:
+        cid = str(chunk.get("id"))
+        content = str(chunk.get("content", ""))
+        for pattern in patterns:
+            for match in re.findall(pattern, content):
+                name = match.strip()
+                if name in stop or len(name.split()) > 4:
+                    continue
+                kind = "place" if any(w in name.lower() for w in ("building", "site", "branch", "block", "room")) else "resource"
+                add_entity(name, kind, cid)
+
+        # Explicit relationship language is the strongest fallback signal.
+        rel_patterns = [
+            (r"(.+?)\s+(?:depends on|requires)\s+(.+?)(?:[.!?]|$)", "requires", "resource"),
+            (r"(.+?)\s+(?:affects|impacts)\s+(.+?)(?:[.!?]|$)", "affects", "capacity"),
+            (r"(.+?)\s+(?:constrains|limits)\s+(.+?)(?:[.!?]|$)", "constrained_by", "capacity"),
+            (r"(.+?)\s+(?:blocks)\s+(.+?)(?:[.!?]|$)", "blocks", "access"),
+        ]
+        for pattern, rel_type, operator in rel_patterns:
+            for match in re.findall(pattern, content, flags=re.IGNORECASE):
+                source, target = [x.strip(" ,:;") for x in match]
+                add_entity(source, "service", cid)
+                add_entity(target, "metric", cid)
+                relationships.append({
+                    "source": entities_by_name[source.lower()]["name"],
+                    "target": entities_by_name[target.lower()]["name"],
+                    "relationship_type": rel_type,
+                    "operator": operator,
+                    "strength": 0.75,
+                    "confidence": 0.72,
+                    "rationale": "Relationship explicitly stated in supplied evidence.",
+                    "evidence_chunk_ids": [cid],
+                })
+
+    # If evidence is terse, retain recognizable entities from the proposed change.
+    for token in re.findall(r"\b(?:Building|Block|Site|Branch|Clinic|Service|Central|Westside|North|South)\s+[A-Za-z0-9-]+", change_text, flags=re.IGNORECASE):
+        add_entity(token, "place", next(iter(known), "change"))
+
+    entities = list(entities_by_name.values())
+
+    # Conservative generic fallback: connect the changed target to downstream entities
+    # only when the evidence itself mentions a dependency but uses no explicit verb form.
+    if not relationships and len(entities) >= 2:
+        for left, right in zip(entities, entities[1:]):
+            relationships.append({
+                "source": left["name"], "target": right["name"],
+                "relationship_type": "affects", "operator": "capacity",
+                "strength": 0.55, "confidence": 0.55,
+                "rationale": "Conservative fallback relationship inferred from evidence order; verify before use.",
+                "evidence_chunk_ids": left["evidence_chunk_ids"][:1],
+            })
+
+    uncertainties = [{
+        "claim": "Live AI reasoning was unavailable; fallback relationships are evidence-text heuristics and require verification.",
+        "confidence": 1.0,
+        "evidence_chunk_ids": [next(iter(known), "change")],
+    }]
+    return {"entities": entities, "relationships": relationships, "uncertainties": uncertainties, "_fallback_key": "generic"}
 
 
 def _fallback_mutation(extraction: dict[str, Any], change_text: str) -> dict[str, Any]:
