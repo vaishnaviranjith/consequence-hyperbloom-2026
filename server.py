@@ -691,6 +691,9 @@ class ConsequenceHandler(SimpleHTTPRequestHandler):
         if route in {"/", "/index.html"}:
             self.path = "/commercial-mvp.html"
             route = self.path
+        if route == "/api/health":
+            self._json(HTTPStatus.OK, {"status": "ok", "service": "consequence", "mode": provider_mode()})
+            return
         if route == "/api/provider/status":
             self._json(HTTPStatus.OK, {"mode": provider_mode(), "model": configured_model() if provider_mode() == "live" else None})
             return
@@ -726,8 +729,9 @@ class ConsequenceHandler(SimpleHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serve CONSEQUENCE and its server-side OpenAI provider")
-    parser.add_argument("--host", default=os.environ.get("CONSEQUENCE_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.environ.get("CONSEQUENCE_PORT", "4173")))
+    default_host = "0.0.0.0" if os.environ.get("RENDER") else "127.0.0.1"
+    parser.add_argument("--host", default=os.environ.get("CONSEQUENCE_HOST", default_host))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT") or os.environ.get("CONSEQUENCE_PORT", "4173")))
     args = parser.parse_args()
     if not ROOT.is_dir():
         raise SystemExit(f"Missing project directory: {ROOT}")
