@@ -395,17 +395,17 @@ def _fallback_extraction(chunks: list[dict[str, Any]], change_text: str) -> dict
 
         # Turn explicit "X has A, B and C" evidence into executable dependencies.
         has_match = re.search(
-            r"^\\s*([A-Za-z][A-Za-z0-9 -]{1,50}?)\\s+has\\s+(.+?)\\s*$",
+            r"^\s*([A-Za-z][A-Za-z0-9 -]{1,50}?)\s+has\s+(.+?)\s*$",
             content, flags=re.IGNORECASE
         )
         if has_match:
             source = has_match.group(1).strip(" ,")
             attrs_text = has_match.group(2).strip(" .")
             add_entity(source, "place" if re.search(r"building|block|site|branch", source, re.I) else "service", cid)
-            attrs = [a.strip(" .,;") for a in re.split(r",|\\band\\b", attrs_text, flags=re.IGNORECASE)]
+            attrs = [a.strip(" .,;") for a in re.split(r",|\band\b", attrs_text, flags=re.IGNORECASE)]
             for attr in attrs:
-                attr = re.sub(r"^(?:existing|different|lower|finite|longer)\\s+", "", attr, flags=re.I).strip()
-                attr = re.sub(r"\\s+(?:constraints?|dependencies?)$", "", attr, flags=re.I).strip()
+                attr = re.sub(r"^(?:existing|different|lower|finite|longer)\s+", "", attr, flags=re.I).strip()
+                attr = re.sub(r"\s+(?:constraints?|dependencies?)$", "", attr, flags=re.I).strip()
                 if len(attr) < 3 or len(attr) > 55:
                     continue
                 kind = "metric" if re.search(r"capacity|waiting|seats|rooms|time|access|route", attr, re.I) else "resource"
