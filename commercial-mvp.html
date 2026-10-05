@@ -47,7 +47,22 @@ function render(){
 function selectImpact(i){selected=i;const x=data[current].items[i];if(!x)return;document.getElementById("detail").innerHTML='<div class="label">'+x[0]+' IMPACT · PRIORITY '+x[4]+'</div><h3>'+esc(x[1])+'</h3><p>'+esc(x[2])+'</p><div class="label" style="margin-top:15px">Propagation path</div><div class="chips">'+x[3].split(" → ").map(v=>'<span class="chip">'+esc(v)+'</span>').join("")+'</div><div class="mit"><b>Recommended mitigation</b><br>Assign an accountable owner, validate the affected dependency, and confirm the change with a measurable completion test before rollout.</div>';}
 function loadScenario(){current=document.getElementById("scenario").value;selected=0;document.querySelectorAll(".domain button").forEach(b=>b.classList.toggle("active",b.dataset.domain===current));render();}
 document.querySelectorAll(".domain button").forEach(b=>b.onclick=()=>{current=b.dataset.domain;document.getElementById("scenario").value=current;selected=0;render();});
-function run(){document.getElementById("wave").textContent="WAVE 3 · COMPLETE";render();document.getElementById("summary").textContent="Simulation complete · counterfactual deltas ranked for review.";}
+async function run(){
+ const button=document.querySelector(".run"), change=document.getElementById("change").value.trim();
+ if(!change){document.getElementById("summary").textContent="Enter a proposed change first.";return;}
+ button.disabled=true;button.textContent="Running live AI…";
+ try{
+  const scenarioEvidence={healthcare:["Clinic operations","Building A has 6 rooms and compliant access.","Building B has 4 rooms, lower waiting capacity, access constraints, emergency-route constraints, and cold-storage constraints."],education:["CSE classes","Block A has existing labs and timetable capacity.","Block C has fewer compatible labs and longer student movement paths."],business:["Branch operations","Westside serves an existing customer base.","Central branch has finite staffing, service capacity, inventory and queue constraints."],infrastructure:["Public service","Site A is the current service location.","Site B has different access, capacity, maintenance and supply dependencies."]}[current]||[];
+  const chunks=scenarioEvidence.map((content,i)=>({id:current+"-commercial-"+(i+1),content}));
+  const response=await fetch("/api/simulate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chunks,change})});
+  const payload=await response.json(); if(!response.ok||payload.status!=="ok")throw new Error((payload.errors&&payload.errors[0])||"Live simulation failed.");
+  const d=payload.data;document.getElementById("m1").textContent=d.metrics.entitiesAffected;document.getElementById("m2").textContent=d.metrics.propagationDepth+" waves";document.getElementById("m3").textContent=d.metrics.decisionPriority+" / 100";document.getElementById("m4").textContent=d.metrics.confidence+"%";document.getElementById("wave").textContent="LIVE AI · COMPLETE";document.getElementById("summary").textContent=d.consequences.length+" live downstream effects ranked by deterministic scoring.";
+  document.getElementById("list").innerHTML=d.consequences.map((x,i)=>'<div class="item '+(i===0?"selected":"")+'" onclick="showLiveImpact('+i+')"><div class="itemtop"><span class="sev '+(x.severity==="MED"?"med":"")+'">'+esc(x.severity)+'</span><b>'+esc(x.title)+'</b></div><p>'+esc(x.explanation)+'</p></div>').join("");
+  window.liveConsequences=d.consequences;if(d.consequences[0])showLiveImpact(0);
+ }catch(error){document.getElementById("summary").textContent="LIVE AI error: "+error.message;}
+ finally{button.disabled=false;button.textContent="Simulate consequences";}
+}
+function showLiveImpact(i){const x=(window.liveConsequences||[])[i];if(!x)return;document.getElementById("detail").innerHTML='<div class="label">'+esc(x.severity)+' IMPACT · PRIORITY '+x.priority+'</div><h3>'+esc(x.title)+'</h3><p>'+esc(x.explanation)+'</p><div class="label" style="margin-top:15px">Propagation path</div><div class="chips">'+x.path.map(v=>'<span class="chip">'+esc(v)+'</span>').join("")+'</div><div class="label" style="margin-top:12px">AI confidence</div><p>'+x.confidence+'% · deterministic graph depth '+x.depth+'</p><div class="mit"><b>Verification</b><br>Validate this dependency against the underlying evidence before operational rollout.</div>';}
 async function providerStatus(){try{const r=await fetch("/api/provider/status");if(!r.ok)return;const s=await r.json();document.getElementById("provider").textContent=s.mode==="live"?"LIVE AI · "+(s.model||"configured"):"DEMO MODE";}catch(e){}}
 render();providerStatus();
 </script>
