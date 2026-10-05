@@ -15,7 +15,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent
-OUTPUTS = ROOT / "outputs"
+OUTPUTS = ROOT
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-5.6-luna"
 MAX_BODY_BYTES = 2_000_000
@@ -308,6 +308,8 @@ class ConsequenceHandler(SimpleHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path in {"/", "/index.html"}:
+            self.path = "/commercial-mvp.html"
         if self.path == "/api/provider/status":
             self._json(HTTPStatus.OK, {"mode": provider_mode(), "model": configured_model() if provider_mode() == "live" else None})
             return
@@ -340,8 +342,8 @@ def main() -> None:
     parser.add_argument("--host", default=os.environ.get("CONSEQUENCE_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("CONSEQUENCE_PORT", "4173")))
     args = parser.parse_args()
-    if not OUTPUTS.is_dir():
-        raise SystemExit(f"Missing outputs directory: {OUTPUTS}")
+    if not ROOT.is_dir():
+        raise SystemExit(f"Missing project directory: {ROOT}")
     server = ThreadingHTTPServer((args.host, args.port), ConsequenceHandler)
     print(f"CONSEQUENCE server listening on http://{args.host}:{args.port} ({provider_mode()} provider)")
     try:
