@@ -1,90 +1,39 @@
 # CONSEQUENCE
 
+> **Before you change one thing, see what else breaks.**
 
+CONSEQUENCE is a counterfactual operations intelligence product. It turns operational evidence into a structured dependency graph, applies a proposed change, deterministically propagates downstream effects, ranks consequences, and produces an executive decision recommendation with required actions.
 
-> Before you change one thing, see what else breaks.
-
-
-
-CONSEQUENCE is an evidence-grounded AI system that builds a machine-readable model of a real-world system and simulates the cascading consequences of a proposed change before it happens.
-
-
-
-It combines flexible AI reasoning with a structured, inspectable, deterministic simulation and scoring layer. The current implemented vertical is a clinic relocation demonstration.
-
-
-
-## The Problem
-
-
-
-A change that looks local can create consequences elsewhere because real-world systems contain hidden dependencies, constraints, capacity limits, accessibility requirements, schedules, and operational relationships.
-
-
-
-Ordinary summaries, dashboards, and chatbots can describe what is already known, but they do not actually simulate the downstream effects of a proposed change through an interconnected system.
-
-
-
-## What CONSEQUENCE Does
-
-
-
-The system follows this pipeline:
-
-
+## Product flow
 
 ```text
-
 Evidence
+   ↓
+Entities + relationships
+   ↓
+Proposed change / mutation
+   ↓
+Deterministic propagation
+   ↓
+Impact scoring
+   ↓
+Business consequence interpretation
+   ↓
+Executive decision
+   ↓
+Customer report
+```
 
-   â†“
+## Customer experience
 
-Structured Facts
+- `sales.html` — customer-facing product page
+- `commercial-mvp.html` — premium interactive demo
+- `pilot.html` — customer pilot: paste evidence + proposed change → assessment
+- `server.py` — API + deterministic fallback engine
+- `/api/health` — deployment health check
+- `/api/provider/status` — provider status
 
-   â†“
-
-Entity / Relationship Graph
-
-   â†“
-
-Change Interpretation
-
-   â†“
-
-Counterfactual Simulation
-
-   â†“
-
-Consequence Reasoning
-
-   â†“
-
-Risk Scoring
-
-   â†“
-
-Impact Graph
-
-   â†“
-
-Mitigation Plan
-
-## Commercial MVP
-
-The repository now includes **CONSEQUENCE — AI Change Impact Simulator** in `commercial-mvp.html`.
-
-The commercial MVP adds:
-- Healthcare, Education, Business, and Infrastructure scenario presets
-- Natural-language proposed-change workflow
-- Current-world vs counterfactual comparison
-- Prioritized consequence cards
-- Impact-path visualization
-- Explicit demo/live provider status
-- Print-to-PDF report action
-- A clear separation between confirmed dependencies and AI hypotheses
-
-### Run locally
+## Run locally
 
 ```bash
 python server.py
@@ -92,6 +41,28 @@ python server.py
 
 Open `http://127.0.0.1:4173/`.
 
-The root route opens the commercial MVP. The original `consequence-demo.html` remains available as the hackathon/demo experience.
+No third-party Python package is required for the current server. When no AI provider is configured, the product uses the deterministic fallback assessment so the workflow remains demonstrable.
 
-> AI output is assistive and should be reviewed by qualified domain professionals before operational decisions.
+## Public deployment
+
+The repository includes `render.yaml` for a Render Web Service. The server reads Render's `PORT` environment variable and binds to `0.0.0.0` when running on Render.
+
+For live AI, configure the provider credentials as server-side environment variables. Never commit API keys to the repository.
+
+## Commercial positioning
+
+**Start with one real operational decision.**
+
+Customer workflow:
+
+1. Customer provides evidence they are authorized to share.
+2. Customer describes one proposed operational change.
+3. CONSEQUENCE produces an inspectable impact assessment.
+4. The team validates the highest-priority dependencies.
+5. The result becomes a customer-specific pilot and repeatable workflow.
+
+The current implementation includes healthcare, education, business, and infrastructure demonstration scenarios. Customer-specific rules should be validated with the responsible domain owner before production decisions.
+
+## Safety / decision support
+
+CONSEQUENCE is decision-support software. Its outputs are not a substitute for the responsible medical, legal, safety, operational, or technical owner's judgment.
