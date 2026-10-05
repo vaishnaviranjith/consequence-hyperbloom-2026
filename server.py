@@ -393,6 +393,56 @@ def _fallback_extraction(chunks: list[dict[str, Any]], change_text: str) -> dict
         for match in re.findall(r"\b(?:clinic|service|capacity|waiting time|emergency route|cold storage|delivery bay|staffing|inventory|timetable|student delay|reliability|response time)\b", content, flags=re.IGNORECASE):
             add_entity(match, "metric" if match.lower() in {"capacity", "waiting time", "student delay", "reliability", "response time"} else "resource", cid)
 
+        # Turn explicit "X has A, B and C" evidence into executable dependencies.
+        has_match = re.search(
+            r"^\\s*([A-Za-z][A-Za-z0-9 -]{1,50}?)\\s+has\\s+(.+?)\\s*$",
+            content, flags=re.IGNORECASE
+        )
+        if has_match:
+            source = has_match.group(1).strip(" ,")
+            attrs_text = has_match.group(2).strip(" .")
+            add_entity(source, "place" if re.search(r"building|block|site|branch", source, re.I) else "service", cid)
+            attrs = [a.strip(" .,;") for a in re.split(r",|\\band\\b", attrs_text, flags=re.IGNORECASE)]
+            for attr in attrs:
+                attr = re.sub(r"^(?:existing|different|lower|finite|longer)\\s+", "", attr, flags=re.I).strip()
+                attr = re.sub(r"\\s+(?:constraints?|dependencies?)$", "", attr, flags=re.I).strip()
+                if len(attr) < 3 or len(attr) > 55:
+                    continue
+                kind = "metric" if re.search(r"capacity|waiting|seats|rooms|time|access|route", attr, re.I) else "resource"
+                add_entity(attr, kind, cid)
+                relationships.append({
+                    "source": entities_by_name[source.lower()]["name"],
+                    "target": entities_by_name[attr.lower()]["name"],
+                    "relationship_type": "constrained_by" if kind == "metric" else "requires",
+                    "operator": "capacity" if kind == "metric" else "resource",
+                    "strength": 0.78, "confidence": 0.78,
+                    "rationale": "Dependency inferred from an explicit evidence has-statement.",
+                    "evidence_chunk_ids": [cid],
+                })
+
+                # Conservative second-order operational effects from the named constraint.
+                effects = []
+                if re.search(r"capacity|rooms|seats", attr, re.I):
+                    effects = [("service capacity", "affects", "capacity")]
+                elif re.search(r"waiting", attr, re.I):
+                    effects = [("waiting time", "affects", "capacity")]
+                elif re.search(r"access", attr, re.I):
+                    effects = [("patient flow", "affects", "capacity")]
+                elif re.search(r"emergency|route", attr, re.I):
+                    effects = [("response time", "affects", "capacity")]
+                elif re.search(r"cold storage", attr, re.I):
+                    effects = [("delivery bay", "requires", "resource")]
+                for effect, rel_type, operator in effects:
+                    add_entity(effect, "metric" if operator == "capacity" else "resource", cid)
+                    relationships.append({
+                        "source": entities_by_name[attr.lower()]["name"],
+                        "target": entities_by_name[effect.lower()]["name"],
+                        "relationship_type": rel_type, "operator": operator,
+                        "strength": 0.72, "confidence": 0.72,
+                        "rationale": "Conservative operational effect inferred from the evidence attribute.",
+                        "evidence_chunk_ids": [cid],
+                    })
+
         rel_patterns = [
             (r"\b([A-Za-z][A-Za-z0-9 -]{1,50}?)\s+(?:depends on|requires)\s+([A-Za-z][A-Za-z0-9 -]{1,50}?)(?:[.!?]|$)", "requires", "resource"),
             (r"\b([A-Za-z][A-Za-z0-9 -]{1,50}?)\s+(?:affects|impacts)\s+([A-Za-z][A-Za-z0-9 -]{1,50}?)(?:[.!?]|$)", "affects", "capacity"),
