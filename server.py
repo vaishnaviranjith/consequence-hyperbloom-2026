@@ -8,6 +8,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -686,9 +687,11 @@ class ConsequenceHandler(SimpleHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path in {"/", "/index.html"}:
+        route = urlsplit(self.path).path
+        if route in {"/", "/index.html"}:
             self.path = "/commercial-mvp.html"
-        if self.path == "/api/provider/status":
+            route = self.path
+        if route == "/api/provider/status":
             self._json(HTTPStatus.OK, {"mode": provider_mode(), "model": configured_model() if provider_mode() == "live" else None})
             return
         super().do_GET()
@@ -704,11 +707,14 @@ class ConsequenceHandler(SimpleHTTPRequestHandler):
             body = json.loads(self.rfile.read(length).decode("utf-8"))
             if not isinstance(body, dict):
                 raise ProviderError("Request body must be a JSON object.")
-            if provider_mode() != "live":
-                self._json(HTTPStatus.SERVICE_UNAVAILABLE, response_payload("not_configured", errors=["OPENAI_API_KEY is not configured on the server."]))
-                return
             if self.path == "/api/simulate":
-                self._json(HTTPStatus.OK, execute_simulation(body))
+                if provider_mode() == "live":
+                    self._json(HTTPStatus.OK, execute_simulation(body))
+                else:
+                    self._json(HTTPStatus.OK, _fallback_simulation(body, "AI provider is not configured; deterministic fallback simulation used."))
+                return
+            if provider_mode() != "live":
+                self._json(HTTPStatus.SERVICE_UNAVAILABLE, response_payload("not_configured", errors=["AI provider is not configured on the server."]))
                 return
             action = self.path.removeprefix("/api/provider/")
             self._json(HTTPStatus.OK, execute_provider(action, body))
