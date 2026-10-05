@@ -368,6 +368,56 @@ def _interpret_consequence(item: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _executive_decision(consequences: list[dict[str, Any]], metrics: dict[str, Any]) -> dict[str, Any]:
+    """Convert scored consequences into an executive decision recommendation."""
+    priority = int(metrics.get("decisionPriority", 0) or 0)
+    confidence = int(metrics.get("confidence", 0) or 0)
+    high_count = sum(1 for item in consequences if str(item.get("severity", "")).upper() == "HIGH")
+    critical_types = {"response", "reliability", "commercial"}
+    critical = [item for item in consequences if item.get("impactType") in critical_types]
+
+    if not consequences:
+        decision = "GO"
+        reason = "No downstream consequence was established from the supplied evidence."
+    elif critical or priority >= 85 or high_count >= 3:
+        decision = "DO NOT PROCEED"
+        reason = "The simulation identifies material downstream risk that should be resolved before rollout."
+    elif priority >= 65 or high_count >= 1:
+        decision = "GO WITH CONDITIONS"
+        reason = "The change is potentially viable, but the highest-priority dependencies should be validated and mitigated before rollout."
+    else:
+        decision = "GO"
+        reason = "The identified downstream effects are limited and do not currently indicate a material blocker."
+
+    risks = []
+    actions = []
+    seen = set()
+    for item in consequences[:5]:
+        title = str(item.get("title", ""))
+        if title not in seen:
+            seen.add(title)
+            risks.append({
+                "title": title,
+                "priority": int(item.get("priority", 0) or 0),
+                "type": item.get("impactType", "dependency"),
+                "path": item.get("path", []),
+            })
+        mitigation = item.get("recommendedMitigation")
+        if isinstance(mitigation, str) and mitigation and mitigation not in actions:
+            actions.append(mitigation)
+        if len(actions) >= 3:
+            break
+
+    return {
+        "decision": decision,
+        "reason": reason,
+        "decisionPriority": priority,
+        "confidence": confidence,
+        "topRisks": risks[:3],
+        "requiredActions": actions[:3],
+    }
+
+
 def _deterministic_simulation(extraction: dict[str, Any], hypotheses: list[dict[str, Any]], mutation: dict[str, Any]) -> dict[str, Any]:
     entities = extraction.get("entities", [])
     relationships = extraction.get("relationships", [])
@@ -403,7 +453,8 @@ def _deterministic_simulation(extraction: dict[str, Any], hypotheses: list[dict[
             priority = round(max(1, min(100, 45 + 35 * strength + 8 * min(depth, 3))))
             consequences.append(_interpret_consequence({"id": f"impact-{target}", "title": f"{target_entity.get('name')} may be affected", "severity": "HIGH" if priority >= 75 else "MED", "priority": priority, "confidence": round(100 * strength), "depth": depth, "path": [names.get(item, item) for item in next_path], "relationshipType": edge["type"], "explanation": f"The proposed change can propagate through the confirmed {edge['type'].replace('_', ' ')} dependency to {target_entity.get('name')}.", "evidenceChunkIds": target_entity.get("evidence_chunk_ids", [])}))
     ranked = sorted({item["id"]: item for item in consequences}.values(), key=lambda item: item["priority"], reverse=True)[:10]
-    return {"entities": [{"id": entity_ids[e["name"]], **e} for e in entities], "relationships": relationships, "hypotheses": hypotheses, "mutation": mutation, "consequences": ranked, "metrics": {"entitiesAffected": len(ranked), "propagationDepth": max([item["depth"] for item in ranked], default=0), "decisionPriority": ranked[0]["priority"] if ranked else 0, "confidence": round(sum(item["confidence"] for item in ranked) / len(ranked)) if ranked else 0}}
+    metrics = {"entitiesAffected": len(ranked), "propagationDepth": max([item["depth"] for item in ranked], default=0), "decisionPriority": ranked[0]["priority"] if ranked else 0, "confidence": round(sum(item["confidence"] for item in ranked) / len(ranked)) if ranked else 0}
+    return {"entities": [{"id": entity_ids[e["name"]], **e} for e in entities], "relationships": relationships, "hypotheses": hypotheses, "mutation": mutation, "consequences": ranked, "metrics": metrics, "executiveDecision": _executive_decision(ranked, metrics)}
 
 
 def _fallback_extraction(chunks: list[dict[str, Any]], change_text: str) -> dict[str, Any]:
