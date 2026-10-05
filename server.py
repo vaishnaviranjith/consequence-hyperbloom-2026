@@ -339,89 +339,85 @@ def _deterministic_simulation(extraction: dict[str, Any], hypotheses: list[dict[
 
 
 def _fallback_extraction(chunks: list[dict[str, Any]], change_text: str) -> dict[str, Any]:
-    """Derive a conservative graph from evidence text without hard-coded scenario chains."""
-    known = {str(chunk.get("id")) for chunk in chunks if chunk.get("id")}
+    """Build a conservative evidence graph and preserve relocation semantics."""
+    import re
+    known = [str(chunk.get("id")) for chunk in chunks if chunk.get("id")]
+    fallback_chunk = known[0] if known else "change"
     entities_by_name: dict[str, dict[str, Any]] = {}
     relationships: list[dict[str, Any]] = []
 
-    def add_entity(name: str, kind: str, chunk_id: str) -> None:
+    def add_entity(name: str, kind: str = "resource", chunk_id: str = fallback_chunk) -> None:
         clean = " ".join(name.strip(" .,:;()[]{}").split())
         if len(clean) < 2 or len(clean) > 80:
             return
-        entities_by_name.setdefault(clean.lower(), {
-            "name": clean,
-            "type": kind,
-            "description": f"Evidence-supported {kind}.",
-            "attributes": {},
-            "confidence": 0.72,
-            "evidence_chunk_ids": [chunk_id],
-        })
-        if chunk_id not in entities_by_name[clean.lower()]["evidence_chunk_ids"]:
-            entities_by_name[clean.lower()]["evidence_chunk_ids"].append(chunk_id)
+        key = clean.lower()
+        if key not in entities_by_name:
+            entities_by_name[key] = {
+                "name": clean, "type": kind,
+                "description": f"Evidence-supported {kind}.",
+                "attributes": {}, "confidence": 0.72,
+                "evidence_chunk_ids": [chunk_id],
+            }
 
-    # Extract explicit quoted/name-like entities and common operational nouns.
-    import re
-    patterns = [
-        r"([A-Z][A-Za-z0-9]+(?: [A-Z][A-Za-z0-9]+){0,3})",
-        r"([A-Za-z][A-Za-z0-9 -]{1,50})\s+(?:has|requires|depends on|affects|constrains|blocks)\b",
-    ]
-    stop = {"The", "This", "That", "Evidence", "Clinic", "Move", "Current", "Next", "Month"}
+    # Parse explicit relocation/change grammar before generic evidence parsing.
+    move = re.search(
+        r"move\s+(?:the\s+)?(.+?)\s+from\s+(.+?)\s+to\s+(.+?)(?:\s+(?:next|this|on|by)\b|[.!?]|$)",
+        change_text, flags=re.IGNORECASE,
+    )
+    if move:
+        subject, old_location, new_location = [x.strip(" .,") for x in move.groups()]
+        add_entity(subject, "service")
+        add_entity(old_location, "place")
+        add_entity(new_location, "place")
+        relationships.append({
+            "source": subject, "target": new_location,
+            "relationship_type": "located_at", "operator": "location",
+            "strength": 0.9, "confidence": 0.9,
+            "rationale": "Proposed relocation explicitly states the new location.",
+            "evidence_chunk_ids": [fallback_chunk],
+        })
+        relationships.append({
+            "source": subject, "target": old_location,
+            "relationship_type": "located_at", "operator": "location",
+            "strength": 0.9, "confidence": 0.9,
+            "rationale": "Proposed relocation explicitly states the previous location.",
+            "evidence_chunk_ids": [fallback_chunk],
+        })
+
+    # Extract concise named entities from evidence, avoiding sentence fragments.
     for chunk in chunks:
         cid = str(chunk.get("id"))
         content = str(chunk.get("content", ""))
-        for pattern in patterns:
-            for match in re.findall(pattern, content):
-                name = match.strip()
-                if name in stop or len(name.split()) > 4:
-                    continue
-                kind = "place" if any(w in name.lower() for w in ("building", "site", "branch", "block", "room")) else "resource"
-                add_entity(name, kind, cid)
+        for match in re.findall(r"\b(?:Building|Block|Site|Branch)\s+[A-Za-z0-9-]+", content, flags=re.IGNORECASE):
+            add_entity(match, "place", cid)
+        for match in re.findall(r"\b(?:clinic|service|capacity|waiting time|emergency route|cold storage|delivery bay|staffing|inventory|timetable|student delay|reliability|response time)\b", content, flags=re.IGNORECASE):
+            add_entity(match, "metric" if match.lower() in {"capacity", "waiting time", "student delay", "reliability", "response time"} else "resource", cid)
 
-        # Explicit relationship language is the strongest fallback signal.
         rel_patterns = [
-            (r"(.+?)\s+(?:depends on|requires)\s+(.+?)(?:[.!?]|$)", "requires", "resource"),
-            (r"(.+?)\s+(?:affects|impacts)\s+(.+?)(?:[.!?]|$)", "affects", "capacity"),
-            (r"(.+?)\s+(?:constrains|limits)\s+(.+?)(?:[.!?]|$)", "constrained_by", "capacity"),
-            (r"(.+?)\s+(?:blocks)\s+(.+?)(?:[.!?]|$)", "blocks", "access"),
+            (r"\b([A-Za-z][A-Za-z0-9 -]{1,50}?)\s+(?:depends on|requires)\s+([A-Za-z][A-Za-z0-9 -]{1,50}?)(?:[.!?]|$)", "requires", "resource"),
+            (r"\b([A-Za-z][A-Za-z0-9 -]{1,50}?)\s+(?:affects|impacts)\s+([A-Za-z][A-Za-z0-9 -]{1,50}?)(?:[.!?]|$)", "affects", "capacity"),
+            (r"\b([A-Za-z][A-Za-z0-9 -]{1,50}?)\s+(?:constrains|limits)\s+([A-Za-z][A-Za-z0-9 -]{1,50}?)(?:[.!?]|$)", "constrained_by", "capacity"),
         ]
         for pattern, rel_type, operator in rel_patterns:
-            for match in re.findall(pattern, content, flags=re.IGNORECASE):
-                source, target = [x.strip(" ,:;") for x in match]
-                add_entity(source, "service", cid)
-                add_entity(target, "metric", cid)
-                relationships.append({
-                    "source": entities_by_name[source.lower()]["name"],
-                    "target": entities_by_name[target.lower()]["name"],
-                    "relationship_type": rel_type,
-                    "operator": operator,
-                    "strength": 0.75,
-                    "confidence": 0.72,
-                    "rationale": "Relationship explicitly stated in supplied evidence.",
-                    "evidence_chunk_ids": [cid],
-                })
-
-    # If evidence is terse, retain recognizable entities from the proposed change.
-    for token in re.findall(r"\b(?:Building|Block|Site|Branch|Clinic|Service|Central|Westside|North|South)\s+[A-Za-z0-9-]+", change_text, flags=re.IGNORECASE):
-        add_entity(token, "place", next(iter(known), "change"))
+            for source, target in re.findall(pattern, content, flags=re.IGNORECASE):
+                source, target = source.strip(), target.strip()
+                if len(source.split()) <= 5 and len(target.split()) <= 5:
+                    add_entity(source, "service", cid)
+                    add_entity(target, "metric", cid)
+                    relationships.append({
+                        "source": entities_by_name[source.lower()]["name"],
+                        "target": entities_by_name[target.lower()]["name"],
+                        "relationship_type": rel_type, "operator": operator,
+                        "strength": 0.7, "confidence": 0.7,
+                        "rationale": "Relationship explicitly stated in supplied evidence.",
+                        "evidence_chunk_ids": [cid],
+                    })
 
     entities = list(entities_by_name.values())
-
-    # Conservative generic fallback: connect the changed target to downstream entities
-    # only when the evidence itself mentions a dependency but uses no explicit verb form.
-    if not relationships and len(entities) >= 2:
-        for left, right in zip(entities, entities[1:]):
-            relationships.append({
-                "source": left["name"], "target": right["name"],
-                "relationship_type": "affects", "operator": "capacity",
-                "strength": 0.55, "confidence": 0.55,
-                "rationale": "Conservative fallback relationship inferred from evidence order; verify before use.",
-                "evidence_chunk_ids": left["evidence_chunk_ids"][:1],
-            })
-
     uncertainties = [{
-        "claim": "Live AI reasoning was unavailable; fallback relationships are evidence-text heuristics and require verification.",
+        "claim": "Live AI reasoning was unavailable; fallback relationships require evidence verification.",
         "confidence": 1.0,
-        "evidence_chunk_ids": [next(iter(known), "change")],
+        "evidence_chunk_ids": [fallback_chunk],
     }]
     return {"entities": entities, "relationships": relationships, "uncertainties": uncertainties, "_fallback_key": "generic"}
 
