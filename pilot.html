@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CONSEQUENCE — Customer Pilot</title>
+<style>
+:root{--bg:#07151f;--panel:#0d2230;--panel2:#102b3b;--line:#234556;--ink:#ecf7f8;--muted:#9bb3bc;--teal:#61e0cf;--amber:#e8bd72;--red:#ee8e82}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 20% 0%,#12384b 0,#07151f 42%);color:var(--ink);font:15px/1.55 Inter,system-ui,-apple-system,"Segoe UI",sans-serif}.wrap{max-width:1180px;margin:auto;padding:28px}.nav{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px}.brand{font-weight:950;letter-spacing:.16em}.nav a{color:var(--muted);text-decoration:none;font-weight:800}.hero{display:flex;justify-content:space-between;gap:25px;align-items:end;margin-bottom:22px}.eyebrow,.label{font-size:10px;letter-spacing:.16em;text-transform:uppercase;font-weight:900;color:var(--teal)}h1{font-size:42px;line-height:1.05;margin:8px 0}.sub{color:var(--muted);max-width:700px}.status{border:1px solid var(--line);border-radius:999px;padding:8px 12px;color:var(--muted);font-size:11px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:linear-gradient(145deg,#0d2230,#091b27);border:1px solid var(--line);border-radius:18px;padding:20px;box-shadow:0 20px 55px #0005}.field{width:100%;background:#07151f;color:var(--ink);border:1px solid #294b5b;border-radius:10px;padding:12px;margin-top:8px;font:inherit;resize:vertical}.evidence{min-height:230px}.change{min-height:110px}.run{width:100%;margin-top:12px;border:0;border-radius:10px;padding:13px;background:var(--teal);color:#062028;font-weight:950;cursor:pointer}.run:disabled{opacity:.55;cursor:wait}.result{margin-top:16px}.decision{padding:16px;border-radius:14px;border:1px solid var(--line);background:#091b27}.decision.go{border-color:#367d73}.decision.conditional{border-color:#8b7040}.decision.stop{border-color:#8a4e48}.decisionValue{font-size:22px;font-weight:950;margin:4px 0}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.metric{padding:12px;border:1px solid var(--line);border-radius:10px}.metric b{display:block;font-size:19px}.metric span{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}.risk{padding:12px 0;border-bottom:1px solid #193847}.risk:last-child{border-bottom:0}.risk b{display:block}.risk small{color:var(--muted)}.actions{display:flex;gap:8px;margin-top:12px}.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:10px 13px;font-weight:800;cursor:pointer}.note{font-size:10px;color:#78919b;margin-top:14px}@media(max-width:850px){.grid{grid-template-columns:1fr}.hero{display:block}.metrics{grid-template-columns:1fr 1fr}}@media print{body{background:#fff;color:#111}.card,.decision{color:#111;background:#fff;border-color:#ddd;box-shadow:none}.nav a,.run,.actions,.status{display:none}.field{color:#111;background:#fff;border-color:#ddd}.muted,.sub,.note{color:#555}}
+</style>
+</head>
+<body>
+<main class="wrap">
+<nav class="nav"><div class="brand">CONSEQUENCE</div><a href="/commercial-mvp.html">Product demo →</a></nav>
+<section class="hero">
+<div><div class="eyebrow">CUSTOMER PILOT</div><h1>Assess one real operational change.</h1><p class="sub">Paste the evidence your team already has, describe the change you are considering, and generate an inspectable consequence assessment with an executive recommendation.</p></div>
+<div class="status" id="status">READY</div>
+</section>
+<section class="grid">
+<div class="card">
+<div class="label">01 · Evidence</div>
+<textarea id="evidence" class="field evidence" placeholder="Paste facts, notes, policy excerpts, capacity details, dependencies, schedules, etc.">Clinic operations
+Building A has 6 rooms and compliant access.
+Building B has 4 rooms, lower waiting capacity, access constraints, emergency-route constraints, and cold-storage constraints.</textarea>
+<div class="label" style="margin-top:18px">02 · Proposed change</div>
+<textarea id="change" class="field change">Move the community clinic from Building A to Building B next month.</textarea>
+<button id="run" class="run" onclick="assess()">Run customer assessment →</button>
+<p class="note">Use evidence you are authorized to share. CONSEQUENCE is decision support; the responsible operational owner remains accountable for final decisions.</p>
+</div>
+<div class="card result">
+<div class="label">03 · Decision output</div>
+<div id="decision" class="decision"><div class="decisionValue">Waiting for assessment</div><div id="reason" class="sub">Your recommendation will appear here.</div></div>
+<div class="metrics">
+<div class="metric"><b id="m1">—</b><span>Impacts</span></div>
+<div class="metric"><b id="m2">—</b><span>Depth</span></div>
+<div class="metric"><b id="m3">—</b><span>Priority</span></div>
+<div class="metric"><b id="m4">—</b><span>Confidence</span></div>
+</div>
+<div style="margin-top:18px"><div class="label">Top risks</div><div id="risks" class="sub">—</div></div>
+<div style="margin-top:18px"><div class="label">Required actions</div><div id="actions" class="sub">—</div></div>
+<div class="actions"><button class="ghost" onclick="window.print()">Export report</button><button class="ghost" onclick="window.location.href='/sales.html'">Back to customer page</button></div>
+</div>
+</section>
+<section class="card" style="margin-top:16px"><div class="label">04 · Consequence detail</div><div id="consequences" class="sub" style="margin-top:8px">Run an assessment to see ranked downstream consequences and propagation paths.</div></section>
+</main>
+<script>
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function setStatus(t){document.getElementById("status").textContent=t}
+function list(items,empty){return items&&items.length?items.map(x=>"<div class='risk'><b>"+esc(x.title||x)+"</b><small>"+esc(x.explanation||("Priority "+(x.priority??"—")))+"</small></div>").join(""):"<div>"+empty+"</div>"}
+async function assess(){
+ const evidence=document.getElementById("evidence").value.trim(), change=document.getElementById("change").value.trim(), button=document.getElementById("run");
+ if(!evidence||!change){setStatus("EVIDENCE + CHANGE REQUIRED");return}
+ const lines=evidence.split(/\n+/).map(x=>x.trim()).filter(Boolean);
+ const chunks=lines.map((content,i)=>({id:"pilot-"+(i+1),content}));
+ button.disabled=true;button.textContent="Assessing…";setStatus("RUNNING");
+ try{
+  const r=await fetch("/api/simulate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chunks,change})});
+  const p=await r.json();if(!r.ok||p.status!=="ok")throw new Error(p.errors?.[0]||"Assessment failed");
+  const d=p.data||{}, impacts=Array.isArray(d.consequences)?d.consequences:[], dec=d.executiveDecision||{};
+  const box=document.getElementById("decision"), value=dec.decision||"REVIEW";
+  box.className="decision "+(value==="GO"?"go":value==="GO WITH CONDITIONS"?"conditional":"stop");
+  box.querySelector(".decisionValue").textContent=value;
+  document.getElementById("reason").textContent=(dec.reason||"")+" "+(d.mode==="fallback"?"Assessment used deterministic evidence reasoning because live AI is not configured.":"");
+  const m=d.metrics||{};document.getElementById("m1").textContent=m.entitiesAffected??impacts.length;document.getElementById("m2").textContent=(m.propagationDepth??0)+" waves";document.getElementById("m3").textContent=(m.decisionPriority??0)+"/100";document.getElementById("m4").textContent=(m.confidence??0)+"%";
+  document.getElementById("risks").innerHTML=list(dec.topRisks,"No material risks ranked.");
+  document.getElementById("actions").innerHTML=(dec.requiredActions||[]).length?dec.requiredActions.map(x=>"<div class='risk'><b>"+esc(x)+"</b></div>").join(""):"<div>No additional action identified.</div>";
+  document.getElementById("consequences").innerHTML=impacts.length?impacts.map((x,i)=>"<div class='risk'><b>"+esc(x.severity)+" · "+esc(x.title)+" · priority "+esc(x.priority)+"</b><small>"+esc(x.explanation)+"<br>Path: "+esc((x.path||[]).join(" → "))+"</small></div>").join(""):"No downstream consequences were established from the supplied evidence.";
+  setStatus(d.mode==="fallback"?"DETERMINISTIC ASSESSMENT COMPLETE":"LIVE AI ASSESSMENT COMPLETE");
+ }catch(e){setStatus("ERROR");document.getElementById("reason").textContent=e.message||"Assessment failed."}
+ finally{button.disabled=false;button.textContent="Run customer assessment →"}
+}
+</script>
+</body>
+</html>
